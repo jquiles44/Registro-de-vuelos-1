@@ -1,5 +1,63 @@
 import { useState, useEffect, useRef } from "react";
 
+// ══════════════════════════════════════════════════════════
+//  CONFIGURACIÓN DE LA API (Apps Script)
+//  Sustituye con tu URL real del Paso 4
+// ══════════════════════════════════════════════════════════
+// ⚠️ SUSTITUYE ESTO con tu URL real de Apps Script (termina en /exec)
+const API_URL = 'https://script.google.com/macros/s/AKfycby1nUBZFIWysqQjIMnG6MxAyrl2iN0WKO3go39UdRFqK2bZsL2LKfybVJy90tgfSIsk/exec';
+
+/**
+ * Función genérica para llamar a la API.
+ * Las acciones de lectura usan GET; las de escritura usan POST.
+ */
+async function callApi(action, payload = {}) {
+  const readActions = ['getAll', 'getFlights', 'getAirlines', 'getPlanes'];
+
+  try {
+    let response;
+
+    if (readActions.includes(action)) {
+      // GET — lectura de datos
+      response = await fetch(`${API_URL}?action=${action}`, {
+        redirect: 'follow',
+      });
+    } else {
+      // POST — escritura de datos
+      response = await fetch(API_URL, {
+        method: 'POST',
+        redirect: 'follow',
+        headers: { 'Content-Type': 'text/plain' }, // Apps Script requiere text/plain en POST
+        body: JSON.stringify({ action, ...payload }),
+      });
+    }
+
+    const json = await response.json();
+    if (!json.ok) throw new Error(json.error || 'Error desconocido en la API');
+    return json.data;
+
+  } catch (err) {
+    console.error(`API error [${action}]:`, err);
+    throw err;
+  }
+}
+
+/**
+ * Sube una imagen a Google Drive.
+ * Recibe un Data URL (base64) como el que devuelve FileReader,
+ * y devuelve { fileId, url } con la URL pública de Drive.
+ */
+async function uploadImageToDrive(dataUrl, prefix = 'photo') {
+  // dataUrl tiene formato: "data:image/jpeg;base64,/9j/4AAQ..."
+  const [meta, base64] = dataUrl.split(',');
+  const mimeType = meta.match(/:(.*?);/)[1];           // "image/jpeg"
+  const ext      = mimeType.split('/')[1];              // "jpeg"
+  const filename = `${prefix}_${Date.now()}.${ext}`;   // "photo_1737000000.jpeg"
+
+  return callApi('uploadFile', { base64, filename, mimeType });
+  // Devuelve: { fileId: "...", url: "https://drive.google.com/uc?..." }
+}
+
 const FONTS = `@import url('https://fonts.googleapis.com/css2?family=Oxanium:wght@300;400;500;600;700;800&family=Share+Tech+Mono&family=Barlow:wght@300;400;500;600&display=swap');`;
 
 const STYLE = `
@@ -271,7 +329,7 @@ function haversine(lat1,lon1,lat2,lon2){
   return Math.round(R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a)));
 }
 function estimateDur(km){if(!km)return"";const m=Math.round((km/850)*60)+25;return `${Math.floor(m/60)}h ${String(m%60).padStart(2,"0")}m`;}
-function toB64(file){return new Promise((res,rej)=>{const r=new FileReader();r.onload=()=>res(r.result);r.onerror=rej;r.readAsDataURL(file);});}
+function logoSrc(entity) { return entity?.logoUrl || entity?.logo || ''; }
 
 /* ═══════════ LEAFLET MAP ═══════════ */
 function LeafletMap({ flights }) {
@@ -571,7 +629,7 @@ function FlightDetailModal({ flight, airlines, planes, onClose, onSave, onDelete
                 ))}
               </div>
               <hr className="bp-divider" />
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: flight.photo ? 16 : 0 }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: (flight.photo || flight.photoUrl) ? 16 : 0 }}>
                 {[[al?.logo, al?.iata || "✈", flight.airline, al?.country, "Aerolínea"], [pl?.logo, "✈", flight.plane, pl?.type, "Aeronave"]].map(([logo, fb, name, sub, lbl]) => (
                   <div key={lbl} style={{ background: "var(--sky)", borderRadius: 10, padding: 12, display: "flex", alignItems: "center", gap: 10 }}>
                     <LogoBox src={logo} fallback={fb} size={38} />
@@ -579,7 +637,7 @@ function FlightDetailModal({ flight, airlines, planes, onClose, onSave, onDelete
                   </div>
                 ))}
               </div>
-              {flight.photo && <img src={flight.photo} alt="flight" style={{ width: "100%", maxHeight: 200, objectFit: "cover", borderRadius: 10, border: "1px solid var(--border)" }} />}
+              {(flight.photo || flight.photoUrl) && <img src={flight.photoUrl || flight.photo} alt="flight" style={{ width: "100%", maxHeight: 200, objectFit: "cover", borderRadius: 10, border: "1px solid var(--border)" }} />}
             </div>
           </div>
         )}
@@ -595,7 +653,7 @@ function FlightCard({ flight, airlines, planes, onClick }) {
   return (
     <div className="flight-card" onClick={onClick}>
       <div className="flight-card-photo">
-        {flight.photo ? <img src={flight.photo} alt="flight" /> : <div className="flight-card-photo-placeholder">✈</div>}
+        {(flight.photo || flight.photoUrl) ? <img src={flight.photoUrl || flight.photo} alt="flight" /> : <div className="flight-card-photo-placeholder">✈</div>}
         <div className="flight-card-photo-overlay" />
         <div className="flight-card-status"><span className={`badge ${flight.status === "flown" ? "badge-green" : "badge-orange"}`}>{flight.status === "flown" ? "✓ VOLADO" : "⏳ PRÓXIMO"}</span></div>
         {flight.flightNo && <div className="flight-card-no">{flight.flightNo}</div>}
@@ -610,7 +668,7 @@ function FlightCard({ flight, airlines, planes, onClick }) {
           <div style={{ textAlign: "right" }}><div className="iata">{flight.to}</div><div className="city-name" style={{ textAlign: "right" }}>{flight.toCity}</div></div>
         </div>
         <div className="flight-chips">
-          {al && <div className="chip"><LogoBox src={al.logo} fallback={al.iata} size={16} /><span className="chip-txt">{al.name}</span></div>}
+          {al && <div className="chip"><LogoBox src={logoSrc(al)} fallback={al.iata} size={16} /><span className="chip-txt">{al.name}</span></div>}
           {pl && <div className="chip"><span style={{ fontSize: 11 }}>✈</span><span className="chip-txt">{pl.brand} {pl.model}</span></div>}
           <div className="chip"><span className="chip-txt">💺 {flight.seat || "—"}</span></div>
         </div>
@@ -621,7 +679,7 @@ function FlightCard({ flight, airlines, planes, onClick }) {
 }
 
 /* ═══════════ FLIGHTS PAGE ═══════════ */
-function FlightsPage({ flights, setFlights, airlines, planes, statusFilter }) {
+function FlightsPage({ flights, onAdd, onEdit, onDelete, airlines, planes, statusFilter }) {
   const [showAdd, setShowAdd] = useState(false);
   const [detail, setDetail] = useState(null);
   const [search, setSearch] = useState("");
@@ -633,16 +691,14 @@ function FlightsPage({ flights, setFlights, airlines, planes, statusFilter }) {
   const filtered = all.filter(f => {
     const s = search.toLowerCase();
     if (s && !f.from.toLowerCase().includes(s) && !f.to.toLowerCase().includes(s) && !f.fromCity.toLowerCase().includes(s) && !f.toCity.toLowerCase().includes(s) && !(f.flightNo || "").toLowerCase().includes(s)) return false;
-    if (filterAirline && f.airlineId !== Number(filterAirline)) return false;
-    if (filterPlane && f.planeId !== Number(filterPlane)) return false;
+    if (filterAirline && String(f.airlineId) !== String(filterAirline)) return false;
+    if (filterPlane && String(f.planeId) !== String(filterPlane)) return false;
     if (filterDest && f.to !== filterDest && f.from !== filterDest) return false;
     return true;
   }).sort((a, b) => statusFilter === "flown" ? b.date.localeCompare(a.date) : a.date.localeCompare(b.date));
 
   const destinations = [...new Set(all.flatMap(f => [f.from, f.to]))].sort();
-  const saveFlight = u => setFlights(p => p.map(f => f.id === u.id ? u : f));
-  const delFlight = id => setFlights(p => p.filter(f => f.id !== id));
-  const detailFlight = detail ? flights.find(f => f.id === detail.id) || detail : null;
+  const detailFlight = detail ? flights.find(f => String(f.id) === String(detail.id)) || detail : null;
   const anyFilter = search || filterAirline || filterPlane || filterDest;
 
   return (
@@ -650,11 +706,11 @@ function FlightsPage({ flights, setFlights, airlines, planes, statusFilter }) {
       {showAdd && (
         <div className="modal-overlay">
           <div className="modal"><div className="modal-header"><div className="modal-title">NUEVO VUELO</div><button className="btn-icon" onClick={() => setShowAdd(false)}>✕</button></div>
-            <FlightForm airlines={airlines} planes={planes} onSave={f => { setFlights(p => [...p, f]); setShowAdd(false); }} onClose={() => setShowAdd(false)} />
+            <FlightForm airlines={airlines} planes={planes} onSave={async f => { await onAdd(f); setShowAdd(false); }} onClose={() => setShowAdd(false)} />
           </div>
         </div>
       )}
-      {detailFlight && <FlightDetailModal flight={detailFlight} airlines={airlines} planes={planes} onClose={() => setDetail(null)} onSave={u => { saveFlight(u); setDetail(u); }} onDelete={id => { delFlight(id); setDetail(null); }} />}
+      {detailFlight && <FlightDetailModal flight={detailFlight} airlines={airlines} planes={planes} onClose={() => setDetail(null)} onSave={async u => { await onEdit(u); setDetail(u); }} onDelete={async id => { await onDelete(id); setDetail(null); }} />}
       <div className="page-header">
         <div><div className="page-title">{statusFilter === "upcoming" ? "VUELOS PROGRAMADOS" : "HISTORIAL DE VUELOS"}</div><div className="page-sub">{filtered.length} de {all.length} vuelos · clic para abrir detalle</div></div>
         <button className="btn btn-primary" onClick={() => setShowAdd(true)}>+ Añadir Vuelo</button>
@@ -734,11 +790,11 @@ function EntityEditForm({ data, fields, onSave, onCancel }) {
 }
 
 /* ═══════════ AIRLINES PAGE ═══════════ */
-function AirlinesPage({ airlines, setAirlines, flights }) {
+function AirlinesPage({ airlines, onAdd, onEdit, onDelete, flights }) {
   const [selected, setSelected] = useState(null);
   const [editing, setEditing] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
-  const del = id => { setAirlines(p => p.filter(a => a.id !== id)); setSelected(null); };
+  const del = async id => { await onDelete(id); setSelected(null); };
   const pieData = airlines.map(al => ({ label: al.name, value: flights.filter(f => f.airlineId === al.id && f.status === "flown").length })).filter(d => d.value > 0);
 
   if (selected) {
@@ -749,14 +805,14 @@ function AirlinesPage({ airlines, setAirlines, flights }) {
       <div className="page">
         <div className="page-header"><div className="page-title">EDITAR {(al.name || "").toUpperCase()}</div><button className="btn btn-ghost" onClick={() => setEditing(false)}>← Volver</button></div>
         <EntityEditForm data={al} fields={[{ key: "name", label: "Nombre" }, { key: "iata", label: "IATA" }, { key: "country", label: "Nacionalidad" }, { key: "status", label: "Estado", type: "select", options: [{ value: "active", label: "Activa" }, { value: "closed", label: "Cerrada" }] }, { key: "logo", label: "Logo", type: "file", full: true }]}
-          onSave={f => { setAirlines(p => p.map(a => a.id === f.id ? f : a)); setEditing(false); }} onCancel={() => setEditing(false)} />
+          onSave={async f => { await onEdit(f); setEditing(false); }} onCancel={() => setEditing(false)} />
       </div>
     );
     return (
       <div className="page">
         <div className="page-header">
           <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-            <div className="entity-logo" style={{ width: 64, height: 64 }}>{al.logo ? <img src={al.logo} alt="" /> : <span>{al.iata || "✈"}</span>}</div>
+            <div className="entity-logo" style={{ width: 64, height: 64 }}>{logoSrc(al) ? <img src={logoSrc(al)} alt="" /> : <span>{al.iata || "✈"}</span>}</div>
             <div><div className="page-title">{al.name}</div><div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4, flexWrap: "wrap" }}><div className="page-sub">{al.country} · {al.iata}</div><span className={`badge ${al.status === "active" ? "badge-green" : "badge-red"}`}>{al.status === "active" ? "ACTIVA" : "CERRADA"}</span></div></div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -793,7 +849,7 @@ function AirlinesPage({ airlines, setAirlines, flights }) {
       {showAdd && (
         <div className="modal-overlay"><div className="modal"><div className="modal-header"><div className="modal-title">NUEVA AEROLÍNEA</div><button className="btn-icon" onClick={() => setShowAdd(false)}>✕</button></div>
           <EntityEditForm data={{ name: "", iata: "", country: "", status: "active", logo: "" }} fields={[{ key: "name", label: "Nombre", placeholder: "Iberia" }, { key: "iata", label: "IATA", placeholder: "IB" }, { key: "country", label: "Nacionalidad", placeholder: "España" }, { key: "status", label: "Estado", type: "select", options: [{ value: "active", label: "Activa" }, { value: "closed", label: "Cerrada" }] }, { key: "logo", label: "Logo", type: "file", full: true }]}
-            onSave={f => { setAirlines(p => [...p, { ...f, id: Date.now() }]); setShowAdd(false); }} onCancel={() => setShowAdd(false)} />
+            onSave={async f => { await onAdd(f); setShowAdd(false); }} onCancel={() => setShowAdd(false)} />
         </div></div>
       )}
       <div className="page-header"><div><div className="page-title">AEROLÍNEAS</div><div className="page-sub">{airlines.length} registradas · clic para ver detalles</div></div><button className="btn btn-primary" onClick={() => setShowAdd(true)}>+ Nueva Aerolínea</button></div>
@@ -801,7 +857,7 @@ function AirlinesPage({ airlines, setAirlines, flights }) {
       <div className="grid-2">
         {airlines.map(al => (
           <div key={al.id} className="entity-card" onClick={() => setSelected(al.id)}>
-            <div className="entity-logo">{al.logo ? <img src={al.logo} alt="" /> : <span>{al.iata || "✈"}</span>}</div>
+            <div className="entity-logo">{logoSrc(al) ? <img src={logoSrc(al)} alt="" /> : <span>{al.iata || "✈"}</span>}</div>
             <div style={{ flex: 1, minWidth: 0 }}><div className="entity-name">{al.name}</div><div className="entity-sub">{al.country} · {al.iata}</div></div>
             <span className={`badge ${al.status === "active" ? "badge-green" : "badge-red"}`}>{al.status === "active" ? "ACTIVA" : "CERRADA"}</span>
           </div>
@@ -813,11 +869,11 @@ function AirlinesPage({ airlines, setAirlines, flights }) {
 }
 
 /* ═══════════ PLANES PAGE ═══════════ */
-function PlanesPage({ planes, setPlanes, flights, airlines }) {
+function PlanesPage({ planes, onAdd, onEdit, onDelete, flights, airlines }) {
   const [selected, setSelected] = useState(null);
   const [editing, setEditing] = useState(false);
   const [showAdd, setShowAdd] = useState(false);
-  const del = id => { setPlanes(p => p.filter(a => a.id !== id)); setSelected(null); };
+  const del = async id => { await onDelete(id); setSelected(null); };
   const pieData = planes.map(pl => ({ label: `${pl.brand} ${pl.model}`, value: flights.filter(f => f.planeId === pl.id && f.status === "flown").length })).filter(d => d.value > 0);
 
   if (selected) {
@@ -828,14 +884,14 @@ function PlanesPage({ planes, setPlanes, flights, airlines }) {
       <div className="page">
         <div className="page-header"><div className="page-title">EDITAR {pl.brand} {pl.model}</div><button className="btn btn-ghost" onClick={() => setEditing(false)}>← Volver</button></div>
         <EntityEditForm data={pl} fields={[{ key: "brand", label: "Fabricante" }, { key: "model", label: "Modelo" }, { key: "type", label: "Tipo", full: true }, { key: "logo", label: "Imagen del avión", type: "file", full: true }]}
-          onSave={f => { setPlanes(p => p.map(a => a.id === f.id ? f : a)); setEditing(false); }} onCancel={() => setEditing(false)} />
+          onSave={async f => { await onEdit(f); setEditing(false); }} onCancel={() => setEditing(false)} />
       </div>
     );
     return (
       <div className="page">
         <div className="page-header">
           <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
-            <div className="entity-logo" style={{ width: 64, height: 64 }}>{pl.logo ? <img src={pl.logo} alt="" /> : <span style={{ fontSize: 30 }}>✈</span>}</div>
+            <div className="entity-logo" style={{ width: 64, height: 64 }}>{logoSrc(pl) ? <img src={logoSrc(pl)} alt="" /> : <span style={{ fontSize: 30 }}>✈</span>}</div>
             <div><div className="page-title">{pl.brand} {pl.model}</div><div className="page-sub">{pl.type}</div></div>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
@@ -853,7 +909,7 @@ function PlanesPage({ planes, setPlanes, flights, airlines }) {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
             {plAirlines.length === 0 ? <div style={{ fontSize: 12, color: "var(--muted)", fontFamily: "'Share Tech Mono',monospace" }}>Sin datos</div> : plAirlines.map(al => (
               <div key={al.id} style={{ display: "flex", alignItems: "center", gap: 8, background: "var(--sky)", borderRadius: 10, padding: "8px 12px", border: "1.5px solid var(--border)" }}>
-                <LogoBox src={al.logo} fallback={al.iata} size={24} /><span style={{ fontSize: 13, fontWeight: 600 }}>{al.name}</span>
+                <LogoBox src={logoSrc(al)} fallback={al.iata} size={24} /><span style={{ fontSize: 13, fontWeight: 600 }}>{al.name}</span>
               </div>
             ))}
           </div>
@@ -868,7 +924,7 @@ function PlanesPage({ planes, setPlanes, flights, airlines }) {
                   <span style={{ color: "var(--muted)" }}>→</span>
                   <span style={{ fontFamily: "'Oxanium',sans-serif", fontSize: 18, fontWeight: 700, color: "var(--blue)" }}>{f.to}</span>
                   <span style={{ fontSize: 12, color: "var(--muted2)" }}>{f.fromCity} → {f.toCity}</span>
-                  {al && <div style={{ display: "flex", alignItems: "center", gap: 5 }}><LogoBox src={al.logo} fallback={al.iata} size={16} /><span style={{ fontSize: 11, color: "var(--muted)" }}>{al.name}</span></div>}
+                  {al && <div style={{ display: "flex", alignItems: "center", gap: 5 }}><LogoBox src={logoSrc(al)} fallback={al.iata} size={16} /><span style={{ fontSize: 11, color: "var(--muted)" }}>{al.name}</span></div>}
                   <span style={{ marginLeft: "auto", fontFamily: "'Share Tech Mono',monospace", fontSize: 11, color: "var(--muted)" }}>{f.date}</span>
                   <span className={`badge ${f.status === "flown" ? "badge-green" : "badge-orange"}`}>{f.status === "flown" ? "✓" : "⏳"}</span>
                 </div>
@@ -884,7 +940,7 @@ function PlanesPage({ planes, setPlanes, flights, airlines }) {
       {showAdd && (
         <div className="modal-overlay"><div className="modal"><div className="modal-header"><div className="modal-title">NUEVO AVIÓN</div><button className="btn-icon" onClick={() => setShowAdd(false)}>✕</button></div>
           <EntityEditForm data={{ brand: "", model: "", type: "", logo: "" }} fields={[{ key: "brand", label: "Fabricante", placeholder: "Boeing" }, { key: "model", label: "Modelo", placeholder: "737-800" }, { key: "type", label: "Tipo", placeholder: "Narrow-body", full: true }, { key: "logo", label: "Imagen", type: "file", full: true }]}
-            onSave={f => { setPlanes(p => [...p, { ...f, id: Date.now() }]); setShowAdd(false); }} onCancel={() => setShowAdd(false)} />
+            onSave={async f => { await onAdd(f); setShowAdd(false); }} onCancel={() => setShowAdd(false)} />
         </div></div>
       )}
       <div className="page-header"><div><div className="page-title">FLOTA DE AVIONES</div><div className="page-sub">{planes.length} modelos · clic para ver detalles</div></div><button className="btn btn-primary" onClick={() => setShowAdd(true)}>+ Nuevo Avión</button></div>
@@ -892,7 +948,7 @@ function PlanesPage({ planes, setPlanes, flights, airlines }) {
       <div className="grid-2">
         {planes.map(pl => (
           <div key={pl.id} className="entity-card" onClick={() => setSelected(pl.id)}>
-            <div className="entity-logo">{pl.logo ? <img src={pl.logo} alt="" /> : <span style={{ fontSize: 26 }}>✈</span>}</div>
+            <div className="entity-logo">{logoSrc(pl) ? <img src={logoSrc(pl)} alt="" /> : <span style={{ fontSize: 26 }}>✈</span>}</div>
             <div style={{ flex: 1, minWidth: 0 }}><div className="entity-name">{pl.brand} {pl.model}</div><div className="entity-sub">{pl.type}</div></div>
             <span className="badge badge-blue">{flights.filter(f => f.planeId === pl.id && f.status === "flown").length} vuelos</span>
           </div>
@@ -1002,12 +1058,190 @@ const NAV = [
 
 export default function App() {
   const [page, setPage] = useState("upcoming");
-  const [flights, setFlights] = useState(INIT_FLIGHTS);
-  const [airlines, setAirlines] = useState(INIT_AIRLINES);
-  const [planes, setPlanes] = useState(INIT_PLANES);
+  const [flights, setFlights]   = useState([]);
+  const [airlines, setAirlines] = useState([]);
+  const [planes, setPlanes]     = useState([]);
+  const [loading, setLoading]   = useState(true);
+  const [apiOk, setApiOk]       = useState(null); // null=checking, true=ok, false=error
+  const [saving, setSaving]     = useState(false);
+
+  // ── Carga inicial desde Google Sheets ──────────────────
+  useEffect(() => {
+    const isConfigured = !API_URL.includes('AKfycb...');
+    if (!isConfigured) {
+      // Sin API configurada → usar datos de demo
+      setFlights(INIT_FLIGHTS);
+      setAirlines(INIT_AIRLINES);
+      setPlanes(INIT_PLANES);
+      setApiOk(false);
+      setLoading(false);
+      return;
+    }
+    callApi('getAll')
+      .then(data => {
+        // Normalizar IDs numéricos que vienen como string desde Sheets
+        const norm = arr => (arr || []).map(r => ({
+          ...r,
+          id: r.id !== undefined && r.id !== '' ? String(r.id) : String(Date.now()),
+          airlineId: r.airlineId !== '' ? Number(r.airlineId) : null,
+          planeId:   r.planeId   !== '' ? Number(r.planeId)   : null,
+          distance:  r.distance  !== '' ? Number(r.distance)  : 0,
+          fromLat:   r.fromLat   !== '' ? Number(r.fromLat)   : null,
+          fromLng:   r.fromLng   !== '' ? Number(r.fromLng)   : null,
+          toLat:     r.toLat     !== '' ? Number(r.toLat)     : null,
+          toLng:     r.toLng     !== '' ? Number(r.toLng)     : null,
+        }));
+        const normAirlines = (data.airlines || []).map(r => ({
+          ...r, id: r.id !== undefined ? Number(r.id) : Date.now(),
+        }));
+        const normPlanes = (data.planes || []).map(r => ({
+          ...r, id: r.id !== undefined ? Number(r.id) : Date.now(),
+        }));
+        setFlights(norm(data.flights));
+        setAirlines(normAirlines);
+        setPlanes(normPlanes);
+        setApiOk(true);
+      })
+      .catch(() => {
+        // Si falla, usar datos de demo
+        setFlights(INIT_FLIGHTS);
+        setAirlines(INIT_AIRLINES);
+        setPlanes(INIT_PLANES);
+        setApiOk(false);
+      })
+      .finally(() => setLoading(false));
+  }, []);
+
+  // ── Wrappers CRUD conectados a la API ──────────────────
+
+  const addFlight = async (f) => {
+    setSaving(true);
+    try {
+      let data = { ...f };
+      // Subir foto a Drive si es base64
+      if (data.photo && data.photo.startsWith('data:')) {
+        const { fileId, url } = await uploadImageToDrive(data.photo, 'flight');
+        data.photoUrl = url; data.photoFileId = fileId;
+      }
+      delete data.photo;
+      if (apiOk) {
+        const res = await callApi('saveFlight', { data });
+        data.id = String(res.id);
+      } else {
+        data.id = String(Date.now());
+      }
+      setFlights(p => [...p, data]);
+    } finally { setSaving(false); }
+  };
+
+  const editFlight = async (f) => {
+    setSaving(true);
+    try {
+      let data = { ...f };
+      if (data.photo && data.photo.startsWith('data:')) {
+        if (data.photoFileId) await callApi('deleteFile', { fileId: data.photoFileId }).catch(() => {});
+        const { fileId, url } = await uploadImageToDrive(data.photo, 'flight');
+        data.photoUrl = url; data.photoFileId = fileId;
+      }
+      delete data.photo;
+      if (apiOk) await callApi('updateFlight', { data });
+      setFlights(p => p.map(x => String(x.id) === String(data.id) ? data : x));
+    } finally { setSaving(false); }
+  };
+
+  const removeFlight = async (id) => {
+    const f = flights.find(x => String(x.id) === String(id));
+    if (f?.photoFileId && apiOk) await callApi('deleteFile', { fileId: f.photoFileId }).catch(() => {});
+    if (apiOk) await callApi('deleteFlight', { id: String(id) }).catch(() => {});
+    setFlights(p => p.filter(x => String(x.id) !== String(id)));
+  };
+
+  const addAirline = async (a) => {
+    setSaving(true);
+    try {
+      let data = { ...a };
+      if (data.logo && data.logo.startsWith('data:')) {
+        const { fileId, url } = await uploadImageToDrive(data.logo, 'airline');
+        data.logoUrl = url; data.logoFileId = fileId;
+      }
+      delete data.logo;
+      if (apiOk) { const res = await callApi('saveAirline', { data }); data.id = Number(res.id); }
+      else data.id = Date.now();
+      data.logo = data.logoUrl || '';
+      setAirlines(p => [...p, data]);
+    } finally { setSaving(false); }
+  };
+
+  const editAirline = async (a) => {
+    setSaving(true);
+    try {
+      let data = { ...a };
+      if (data.logo && data.logo.startsWith('data:')) {
+        if (data.logoFileId) await callApi('deleteFile', { fileId: data.logoFileId }).catch(() => {});
+        const { fileId, url } = await uploadImageToDrive(data.logo, 'airline');
+        data.logoUrl = url; data.logoFileId = fileId; data.logo = url;
+      }
+      if (apiOk) await callApi('updateAirline', { data });
+      setAirlines(p => p.map(x => x.id === data.id ? data : x));
+    } finally { setSaving(false); }
+  };
+
+  const removeAirline = async (id) => {
+    if (apiOk) await callApi('deleteAirline', { id: String(id) }).catch(() => {});
+    setAirlines(p => p.filter(x => x.id !== id));
+  };
+
+  const addPlane = async (pl) => {
+    setSaving(true);
+    try {
+      let data = { ...pl };
+      if (data.logo && data.logo.startsWith('data:')) {
+        const { fileId, url } = await uploadImageToDrive(data.logo, 'plane');
+        data.logoUrl = url; data.logoFileId = fileId;
+      }
+      delete data.logo;
+      if (apiOk) { const res = await callApi('savePlane', { data }); data.id = Number(res.id); }
+      else data.id = Date.now();
+      data.logo = data.logoUrl || '';
+      setPlanes(p => [...p, data]);
+    } finally { setSaving(false); }
+  };
+
+  const editPlane = async (pl) => {
+    setSaving(true);
+    try {
+      let data = { ...pl };
+      if (data.logo && data.logo.startsWith('data:')) {
+        if (data.logoFileId) await callApi('deleteFile', { fileId: data.logoFileId }).catch(() => {});
+        const { fileId, url } = await uploadImageToDrive(data.logo, 'plane');
+        data.logoUrl = url; data.logoFileId = fileId; data.logo = url;
+      }
+      if (apiOk) await callApi('updatePlane', { data });
+      setPlanes(p => p.map(x => x.id === data.id ? data : x));
+    } finally { setSaving(false); }
+  };
+
+  const removePlane = async (id) => {
+    if (apiOk) await callApi('deletePlane', { id: String(id) }).catch(() => {});
+    setPlanes(p => p.filter(x => x.id !== id));
+  };
+
+  // ── Stats ──────────────────────────────────────────────
   const upcoming = flights.filter(f => f.status === "upcoming").length;
-  const flown = flights.filter(f => f.status === "flown").length;
-  const totalKm = flights.reduce((s, f) => s + (f.status === "flown" ? (f.distance || 0) : 0), 0);
+  const flown    = flights.filter(f => f.status === "flown").length;
+  const totalKm  = flights.reduce((s, f) => s + (f.status === "flown" ? (Number(f.distance) || 0) : 0), 0);
+
+  // ── Loading screen ─────────────────────────────────────
+  if (loading) return (
+    <>
+      <style>{FONTS}{STYLE}</style>
+      <div style={{display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',height:'100vh',background:'var(--sky)',gap:16}}>
+        <div style={{fontFamily:"'Oxanium',sans-serif",fontSize:32,fontWeight:800,color:'var(--navy)',letterSpacing:2}}>✈ FLIGHTLOG</div>
+        <div style={{fontFamily:"'Share Tech Mono',monospace",fontSize:12,color:'var(--muted)',animation:'pulse 1.5s infinite'}}>Conectando con Google Sheets...</div>
+        <style>{`@keyframes pulse{0%,100%{opacity:0.4}50%{opacity:1}}`}</style>
+      </div>
+    </>
+  );
 
   return (
     <>
@@ -1036,15 +1270,24 @@ export default function App() {
           <div className="sidebar-stats">
             <div>Vuelos <span className="sidebar-stat-val">{flown} realizados · {upcoming} prog.</span></div>
             <div>Total <span className="sidebar-stat-val">{totalKm.toLocaleString()} km</span></div>
+            <div style={{marginTop:4,display:'flex',alignItems:'center',gap:5}}>
+              <div style={{width:6,height:6,borderRadius:'50%',background: apiOk ? '#2dd4a0' : '#f8a93d', flexShrink:0}}/>
+              <span style={{fontSize:9}}>{apiOk ? 'Google Sheets conectado' : 'Modo demo (sin API)'}</span>
+            </div>
           </div>
         </div>
         <main className="main">
-          {page === "upcoming" && <FlightsPage flights={flights} setFlights={setFlights} airlines={airlines} planes={planes} statusFilter="upcoming" />}
-          {page === "flown" && <FlightsPage flights={flights} setFlights={setFlights} airlines={airlines} planes={planes} statusFilter="flown" />}
-          {page === "map" && <MapPage flights={flights} />}
-          {page === "planes" && <PlanesPage planes={planes} setPlanes={setPlanes} flights={flights} airlines={airlines} />}
-          {page === "airlines" && <AirlinesPage airlines={airlines} setAirlines={setAirlines} flights={flights} />}
-          {page === "stats" && <StatsPage flights={flights} airlines={airlines} planes={planes} />}
+          {saving && (
+            <div style={{position:'fixed',top:12,right:16,zIndex:999,background:'var(--navy)',color:'#90CAF9',fontFamily:"'Share Tech Mono',monospace",fontSize:11,padding:'7px 14px',borderRadius:8,boxShadow:'0 4px 16px rgba(0,0,0,0.2)'}}>
+              💾 Guardando...
+            </div>
+          )}
+          {page === "upcoming" && <FlightsPage flights={flights} onAdd={addFlight} onEdit={editFlight} onDelete={removeFlight} airlines={airlines} planes={planes} statusFilter="upcoming" />}
+          {page === "flown"    && <FlightsPage flights={flights} onAdd={addFlight} onEdit={editFlight} onDelete={removeFlight} airlines={airlines} planes={planes} statusFilter="flown" />}
+          {page === "map"      && <MapPage flights={flights} />}
+          {page === "planes"   && <PlanesPage planes={planes} onAdd={addPlane} onEdit={editPlane} onDelete={removePlane} flights={flights} airlines={airlines} />}
+          {page === "airlines" && <AirlinesPage airlines={airlines} onAdd={addAirline} onEdit={editAirline} onDelete={removeAirline} flights={flights} />}
+          {page === "stats"    && <StatsPage flights={flights} airlines={airlines} planes={planes} />}
         </main>
       </div>
     </>
